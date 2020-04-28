@@ -16,7 +16,7 @@ def s_dc(df):
     if df.iloc[-2]['close'] >= df.iloc[-2]['DC_mid'] and df.iloc[-3]['close'] < df.iloc[-3]['DC_mid']:
         signal.append('pk')
     return signal, 's_dc'
-
+New
 def backtest(df, m, name, symbol, rule_type):
     '''
         df: 历史数据
