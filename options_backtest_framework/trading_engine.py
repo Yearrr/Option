@@ -74,7 +74,10 @@ class Position:
         self.current_price = new_price
         if greeks:
             self.greeks = greeks
-        self.unrealized_pnl = (new_price - self.entry_price) * self.quantity
+        # 正确计算未实现盈亏：(当前价格 - 入场价格) * 持仓数量 * 合约乘数
+        # 对于多头：quantity > 0，价格上涨盈利
+        # 对于空头：quantity < 0，价格下跌盈利
+        self.unrealized_pnl = (new_price - self.entry_price) * self.quantity * 100
         
     def add_trade(self, quantity: int, price: float, commission: float = 0):
         """添加交易"""
@@ -92,7 +95,8 @@ class Position:
             else:
                 # 减仓或平仓
                 close_quantity = min(abs(quantity), abs(self.quantity))
-                self.realized_pnl += (price - self.entry_price) * close_quantity * np.sign(self.quantity)
+                # 平仓盈亏 = (平仓价格 - 开仓价格) * 平仓数量 * 持仓方向 * 合约乘数
+                self.realized_pnl += (price - self.entry_price) * close_quantity * np.sign(self.quantity) * 100
                 self.quantity += quantity
                 
                 if self.quantity == 0:
