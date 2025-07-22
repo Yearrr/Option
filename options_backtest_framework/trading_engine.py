@@ -106,6 +106,11 @@ class Position:
         
     def to_dict(self) -> Dict:
         """转换为字典"""
+        # 计算当前市值
+        current_market_value = self.quantity * self.current_price * 100
+        # 计算总盈亏
+        total_pnl = self.unrealized_pnl + self.realized_pnl
+        
         return {
             'position_id': self.position_id,
             'symbol': self.symbol,
@@ -116,8 +121,11 @@ class Position:
             'strategy': self.strategy,
             'unrealized_pnl': self.unrealized_pnl,
             'realized_pnl': self.realized_pnl,
+            'total_pnl': total_pnl,
+            'current_market_value': current_market_value,
             'total_commission': self.total_commission,
-            'greeks': self.greeks
+            'greeks': self.greeks,
+            'position_type': 'Long' if self.quantity > 0 else 'Short'
         }
 
 
@@ -309,9 +317,23 @@ class TradingEngine:
                 del self.positions[symbol]
     
     def get_portfolio_value(self) -> float:
-        """计算投资组合总价值"""
-        positions_value = sum(pos.quantity * pos.current_price * 100 
-                            for pos in self.positions.values())
+        """
+        计算投资组合总价值
+        
+        对于期权持仓：
+        - 多头持仓 (quantity > 0): 资产价值 = quantity × current_price × 100
+        - 空头持仓 (quantity < 0): 负债价值 = quantity × current_price × 100 (为负数)
+        
+        投资组合总价值 = 现金 + 所有持仓的市场价值（包括负债）
+        """
+        positions_value = 0
+        for pos in self.positions.values():
+            # 期权持仓市值 = 持仓数量 × 当前价格 × 合约乘数
+            # 多头持仓：quantity > 0，市值为正（资产）
+            # 空头持仓：quantity < 0，市值为负（负债）
+            position_market_value = pos.quantity * pos.current_price * 100
+            positions_value += position_market_value
+            
         return self.cash + positions_value
     
     def get_portfolio_greeks(self) -> Dict[str, float]:
@@ -336,10 +358,47 @@ class TradingEngine:
         position_data = []
         for position in self.positions.values():
             data = position.to_dict()
+            # 持仓市值 = 数量 × 当前价格 × 合约乘数
+            # 多头持仓：正值（资产）
+            # 空头持仓：负值（负债）
             data['market_value'] = position.quantity * position.current_price * 100
+            # 添加持仓类型标识
+            data['position_type'] = 'Long' if position.quantity > 0 else 'Short'
+            # 计算持仓的绝对价值（用于风险分析）
+            data['absolute_value'] = abs(data['market_value'])
             position_data.append(data)
         
         return pd.DataFrame(position_data)
+    
+    def get_portfolio_breakdown(self) -> Dict[str, float]:
+        """
+        获取投资组合详细分解
+        
+        Returns:
+            包含各项资产负债的详细分解
+        """
+        breakdown = {
+            'cash': self.cash,
+            'long_positions_value': 0,    # 多头持仓总价值（资产）
+            'short_positions_value': 0,   # 空头持仓总价值（负债）
+            'net_positions_value': 0,     # 净持仓价值
+            'total_portfolio_value': 0    # 总投资组合价值
+        }
+        
+        for pos in self.positions.values():
+            position_value = pos.quantity * pos.current_price * 100
+            if pos.quantity > 0:
+                # 多头持仓（资产）
+                breakdown['long_positions_value'] += position_value
+            else:
+                # 空头持仓（负债）
+                breakdown['short_positions_value'] += position_value  # 这是负数
+        
+        breakdown['net_positions_value'] = (breakdown['long_positions_value'] + 
+                                          breakdown['short_positions_value'])
+        breakdown['total_portfolio_value'] = breakdown['cash'] + breakdown['net_positions_value']
+        
+        return breakdown
     
     def get_trade_history(self) -> pd.DataFrame:
         """获取交易历史"""
@@ -504,47 +563,75 @@ class BacktestEngine:
 
 
 if __name__ == "__main__":
-    # 测试交易引擎
+    # 测试交易引擎 - 包含多头和空头持仓
     
     # 创建交易引擎
     engine = TradingEngine(initial_cash=100000)
+    print(f"Initial cash: ${engine.cash:.2f}")
     
-    # 模拟下单
-    order_id = engine.place_order("AAPL_CALL_150_2024_01", "buy", 10, strategy="long_call")
+    # 测试1: 买入期权（多头持仓）
+    print("\n=== 测试多头持仓 ===")
+    order_id1 = engine.place_order("AAPL_CALL_150_2024_01", "buy", 10, strategy="long_call")
+    order1 = engine.orders[0]
+    success1 = engine.execute_order(order1, 5.50)  # 买入价格5.50
+    print(f"Buy order executed: {success1}")
     
-    # 模拟执行
-    order = engine.orders[0]
-    success = engine.execute_order(order, 5.50)  # 以5.50的价格成交
+    # 测试2: 卖出期权（空头持仓）
+    print("\n=== 测试空头持仓 ===")
+    order_id2 = engine.place_order("AAPL_PUT_140_2024_01", "sell", 5, strategy="short_put")
+    order2 = engine.orders[1]
+    success2 = engine.execute_order(order2, 3.20)  # 卖出价格3.20
+    print(f"Sell order executed: {success2}")
     
-    print(f"Order executed: {success}")
-    print(f"Cash remaining: ${engine.cash:.2f}")
+    print(f"\nCash after trades: ${engine.cash:.2f}")
     
-    # 更新持仓价格
+    # 更新市场价格
     market_data = {
         "AAPL_CALL_150_2024_01": {
-            'price': 6.00,
+            'price': 6.00,  # 看涨期权价格上涨
             'greeks': {'delta': 0.6, 'gamma': 0.03, 'theta': -2, 'vega': 8}
+        },
+        "AAPL_PUT_140_2024_01": {
+            'price': 2.80,  # 看跌期权价格下跌
+            'greeks': {'delta': -0.4, 'gamma': 0.02, 'theta': -1.5, 'vega': 6}
         }
     }
     engine.update_positions(market_data)
     
-    # 查看持仓
+    # 查看详细的投资组合分解
+    print("\n=== 投资组合分解 ===")
+    breakdown = engine.get_portfolio_breakdown()
+    for key, value in breakdown.items():
+        print(f"{key}: ${value:.2f}")
+    
+    # 查看持仓摘要
+    print("\n=== 持仓摘要 ===")
     positions = engine.get_position_summary()
-    print("\nPositions:")
-    print(positions)
+    if not positions.empty:
+        for _, pos in positions.iterrows():
+            print(f"Symbol: {pos['symbol']}")
+            print(f"  Type: {pos['position_type']}")
+            print(f"  Quantity: {pos['quantity']}")
+            print(f"  Entry Price: ${pos['entry_price']:.2f}")
+            print(f"  Current Price: ${pos['current_price']:.2f}")
+            print(f"  Market Value: ${pos['market_value']:.2f}")
+            print(f"  Unrealized PnL: ${pos['unrealized_pnl']:.2f}")
+            print()
     
-    # 查看投资组合价值
-    portfolio_value = engine.get_portfolio_value()
-    print(f"\nPortfolio value: ${portfolio_value:.2f}")
-    
-    # 查看Greeks
+    # 查看投资组合Greeks
     portfolio_greeks = engine.get_portfolio_greeks()
-    print(f"Portfolio Greeks: {portfolio_greeks}")
+    print("=== 投资组合Greeks ===")
+    for greek, value in portfolio_greeks.items():
+        print(f"{greek.upper()}: {value:.4f}")
     
-    # 平仓
-    engine.close_position("AAPL_CALL_150_2024_01")
+    # 验证投资组合价值计算
+    portfolio_value = engine.get_portfolio_value()
+    print(f"\n=== 投资组合总价值 ===")
+    print(f"Portfolio value: ${portfolio_value:.2f}")
     
-    # 查看交易历史
-    trades = engine.get_trade_history()
-    print("\nTrade history:")
-    print(trades)
+    # 手动验证计算
+    manual_calc = (engine.cash + 
+                  10 * 6.00 * 100 +    # 多头call持仓
+                  (-5) * 2.80 * 100)    # 空头put持仓（负数）
+    print(f"Manual calculation: ${manual_calc:.2f}")
+    print(f"Calculation matches: {abs(portfolio_value - manual_calc) < 0.01}")
