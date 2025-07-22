@@ -110,6 +110,8 @@ class Position:
         current_market_value = self.quantity * self.current_price * 100
         # 计算总盈亏
         total_pnl = self.unrealized_pnl + self.realized_pnl
+        # 计算权利金现金流（入场时）
+        premium_cash_flow = self.quantity * self.entry_price * 100
         
         return {
             'position_id': self.position_id,
@@ -123,9 +125,10 @@ class Position:
             'realized_pnl': self.realized_pnl,
             'total_pnl': total_pnl,
             'current_market_value': current_market_value,
+            'premium_cash_flow': premium_cash_flow,
             'total_commission': self.total_commission,
             'greeks': self.greeks,
-            'position_type': 'Long' if self.quantity > 0 else 'Short'
+            'option_position_type': 'Bought' if self.quantity > 0 else 'Sold'
         }
 
 
@@ -213,8 +216,14 @@ class TradingEngine:
                 self.current_date or datetime.now(), order.strategy
             )
         
-        # 更新现金
-        cash_flow = -signed_quantity * execution_price * 100 - commission
+        # 更新现金 - 期权交易现金流
+        if order.action == "buy":
+            # 买入期权：支付权利金 + 手续费
+            cash_flow = -(order.quantity * execution_price * 100) - commission
+        else:  # sell
+            # 卖出期权：收到权利金 - 手续费
+            cash_flow = (order.quantity * execution_price * 100) - commission
+        
         self.cash += cash_flow
         
         # 更新订单状态
@@ -320,19 +329,23 @@ class TradingEngine:
         """
         计算投资组合总价值
         
-        对于期权持仓：
-        - 多头持仓 (quantity > 0): 资产价值 = quantity × current_price × 100
-        - 空头持仓 (quantity < 0): 负债价值 = quantity × current_price × 100 (为负数)
+        期权持仓价值计算：
+        - 买入期权 (quantity > 0): 拥有权利，价值 = quantity × current_price × 100
+        - 卖出期权 (quantity < 0): 承担义务，价值 = quantity × current_price × 100 (为负数)
         
-        投资组合总价值 = 现金 + 所有持仓的市场价值（包括负债）
+        现金流已在交易时正确处理：
+        - 买入期权时：现金减少（支付权利金）
+        - 卖出期权时：现金增加（收到权利金）
+        
+        投资组合总价值 = 现金 + 所有期权持仓的当前市值
         """
         positions_value = 0
         for pos in self.positions.values():
-            # 期权持仓市值 = 持仓数量 × 当前价格 × 合约乘数
-            # 多头持仓：quantity > 0，市值为正（资产）
-            # 空头持仓：quantity < 0，市值为负（负债）
-            position_market_value = pos.quantity * pos.current_price * 100
-            positions_value += position_market_value
+            # 期权持仓当前市值
+            # 买入期权：quantity > 0，当前价值为正（资产）
+            # 卖出期权：quantity < 0，当前价值为负（负债）
+            position_current_value = pos.quantity * pos.current_price * 100
+            positions_value += position_current_value
             
         return self.cash + positions_value
     
@@ -358,14 +371,16 @@ class TradingEngine:
         position_data = []
         for position in self.positions.values():
             data = position.to_dict()
-            # 持仓市值 = 数量 × 当前价格 × 合约乘数
-            # 多头持仓：正值（资产）
-            # 空头持仓：负值（负债）
-            data['market_value'] = position.quantity * position.current_price * 100
-            # 添加持仓类型标识
-            data['position_type'] = 'Long' if position.quantity > 0 else 'Short'
+            # 期权持仓当前市值
+            # 买入期权：正值（资产）
+            # 卖出期权：负值（负债）
+            data['current_market_value'] = position.quantity * position.current_price * 100
+            # 添加期权交易类型标识
+            data['option_position_type'] = 'Bought' if position.quantity > 0 else 'Sold'
             # 计算持仓的绝对价值（用于风险分析）
-            data['absolute_value'] = abs(data['market_value'])
+            data['absolute_market_value'] = abs(data['current_market_value'])
+            # 计算权利金现金流（历史）
+            data['premium_cash_flow'] = position.quantity * position.entry_price * 100
             position_data.append(data)
         
         return pd.DataFrame(position_data)
@@ -379,24 +394,24 @@ class TradingEngine:
         """
         breakdown = {
             'cash': self.cash,
-            'long_positions_value': 0,    # 多头持仓总价值（资产）
-            'short_positions_value': 0,   # 空头持仓总价值（负债）
-            'net_positions_value': 0,     # 净持仓价值
+            'bought_options_value': 0,    # 买入期权总价值（资产）
+            'sold_options_value': 0,      # 卖出期权总价值（负债）
+            'net_options_value': 0,       # 净期权价值
             'total_portfolio_value': 0    # 总投资组合价值
         }
         
         for pos in self.positions.values():
-            position_value = pos.quantity * pos.current_price * 100
+            position_current_value = pos.quantity * pos.current_price * 100
             if pos.quantity > 0:
-                # 多头持仓（资产）
-                breakdown['long_positions_value'] += position_value
+                # 买入期权（拥有权利，资产）
+                breakdown['bought_options_value'] += position_current_value
             else:
-                # 空头持仓（负债）
-                breakdown['short_positions_value'] += position_value  # 这是负数
+                # 卖出期权（承担义务，负债）
+                breakdown['sold_options_value'] += position_current_value  # 这是负数
         
-        breakdown['net_positions_value'] = (breakdown['long_positions_value'] + 
-                                          breakdown['short_positions_value'])
-        breakdown['total_portfolio_value'] = breakdown['cash'] + breakdown['net_positions_value']
+        breakdown['net_options_value'] = (breakdown['bought_options_value'] + 
+                                        breakdown['sold_options_value'])
+        breakdown['total_portfolio_value'] = breakdown['cash'] + breakdown['net_options_value']
         
         return breakdown
     
@@ -610,11 +625,12 @@ if __name__ == "__main__":
     if not positions.empty:
         for _, pos in positions.iterrows():
             print(f"Symbol: {pos['symbol']}")
-            print(f"  Type: {pos['position_type']}")
+            print(f"  Type: {pos['option_position_type']}")
             print(f"  Quantity: {pos['quantity']}")
             print(f"  Entry Price: ${pos['entry_price']:.2f}")
             print(f"  Current Price: ${pos['current_price']:.2f}")
-            print(f"  Market Value: ${pos['market_value']:.2f}")
+            print(f"  Premium Cash Flow: ${pos['premium_cash_flow']:.2f}")
+            print(f"  Current Market Value: ${pos['current_market_value']:.2f}")
             print(f"  Unrealized PnL: ${pos['unrealized_pnl']:.2f}")
             print()
     
