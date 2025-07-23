@@ -18,6 +18,7 @@ class DetailedPortfolioTracker:
         self.positions = {}  # symbol -> position info
         self.trades = []
         self.daily_records = []
+        self.realized_pnl = 0  # 累计已实现盈亏
         
     def execute_trade(self, symbol: str, action: str, quantity: int, price: float, 
                      instrument_type: str = "option", description: str = ""):
@@ -35,19 +36,52 @@ class DetailedPortfolioTracker:
         old_cash = self.cash
         self.cash += cash_flow
         
-        # 更新持仓
+        # 更新持仓和计算已实现盈亏
         if symbol in self.positions:
-            old_quantity = self.positions[symbol]['quantity']
+            old_position = self.positions[symbol]
+            old_quantity = old_position['quantity']
+            old_entry_price = old_position['entry_price']
+            
             if action == "buy":
                 new_quantity = old_quantity + quantity
             else:  # sell
                 new_quantity = old_quantity - quantity
             
+            # 计算平仓部分的已实现盈亏
+            if (old_quantity > 0 and action == "sell") or (old_quantity < 0 and action == "buy"):
+                # 平仓交易，计算已实现盈亏
+                close_quantity = min(abs(old_quantity), quantity)
+                if instrument_type == "option":
+                    multiplier = 100
+                else:
+                    multiplier = 1
+                
+                # 平仓盈亏 = (平仓价格 - 入场价格) × 平仓数量 × 乘数 × 方向
+                if old_quantity > 0:  # 原来是多头，现在卖出平仓
+                    close_pnl = (price - old_entry_price) * close_quantity * multiplier
+                else:  # 原来是空头，现在买入平仓
+                    close_pnl = (old_entry_price - price) * close_quantity * multiplier
+                
+                self.realized_pnl += close_pnl
+                print(f"  平仓盈亏: ${close_pnl:+,.2f} | 累计已实现盈亏: ${self.realized_pnl:+,.2f}")
+            
             if new_quantity == 0:
                 del self.positions[symbol]
             else:
+                # 更新持仓
+                if (old_quantity > 0 and action == "buy") or (old_quantity < 0 and action == "sell"):
+                    # 同向加仓，计算加权平均价格
+                    total_cost = abs(old_quantity) * old_entry_price + quantity * price
+                    total_quantity = abs(old_quantity) + quantity
+                    new_entry_price = total_cost / total_quantity
+                else:
+                    # 反向交易后的剩余持仓，使用新价格
+                    new_entry_price = price
+                
                 self.positions[symbol]['quantity'] = new_quantity
+                self.positions[symbol]['entry_price'] = new_entry_price
         else:
+            # 新开仓
             if action == "buy":
                 self.positions[symbol] = {
                     'quantity': quantity,
@@ -107,8 +141,8 @@ class DetailedPortfolioTracker:
             unrealized_pnl = (position['current_price'] - position['entry_price']) * position['quantity'] * multiplier
             total_unrealized_pnl += unrealized_pnl
         
-        # 投资组合价值 = 初始现金 + 总盈亏
-        return self.initial_cash + total_unrealized_pnl
+        # 投资组合价值 = 初始现金 + 已实现盈亏 + 未实现盈亏
+        return self.initial_cash + self.realized_pnl + total_unrealized_pnl
     
     def get_detailed_breakdown(self) -> Dict:
         """获取详细的持仓分解"""
@@ -116,6 +150,7 @@ class DetailedPortfolioTracker:
             'cash': self.cash,
             'total_portfolio_value': 0,
             'total_unrealized_pnl': 0,
+            'total_realized_pnl': self.realized_pnl,
             'positions': []
         }
         
@@ -144,12 +179,12 @@ class DetailedPortfolioTracker:
             total_unrealized_pnl += unrealized_pnl
         
         # 正确的计算逻辑：
-        # 总收益 = 未实现盈亏（期权盈亏 + 期货盈亏）
+        # 总收益 = 已实现盈亏 + 未实现盈亏
         # 投资组合价值 = 初始现金 + 总收益
         breakdown['total_unrealized_pnl'] = total_unrealized_pnl
-        breakdown['total_return'] = total_unrealized_pnl  # 总收益就是未实现盈亏
-        breakdown['total_portfolio_value'] = self.initial_cash + total_unrealized_pnl
-        breakdown['return_pct'] = total_unrealized_pnl / self.initial_cash * 100
+        breakdown['total_return'] = self.realized_pnl + total_unrealized_pnl
+        breakdown['total_portfolio_value'] = self.initial_cash + breakdown['total_return']
+        breakdown['return_pct'] = breakdown['total_return'] / self.initial_cash * 100
         
         return breakdown
     
@@ -491,6 +526,7 @@ def run_delta_hedge_verification():
     print(f"  最终价值: ${final_breakdown['total_portfolio_value']:,.2f}")
     print(f"  总收益: ${final_breakdown['total_return']:+,.2f}")
     print(f"  收益率: {final_breakdown['return_pct']:+.2f}%")
+    print(f"  已实现盈亏: ${final_breakdown['total_realized_pnl']:+,.2f}")
     print(f"  未实现盈亏: ${final_breakdown['total_unrealized_pnl']:+,.2f}")
     
     print(f"\n持仓明细:")
