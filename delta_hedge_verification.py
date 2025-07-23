@@ -43,43 +43,57 @@ class DetailedPortfolioTracker:
             old_entry_price = old_position['entry_price']
             
             if action == "buy":
-                new_quantity = old_quantity + quantity
+                trade_quantity = quantity
+                trade_direction = 1
             else:  # sell
-                new_quantity = old_quantity - quantity
+                trade_quantity = quantity
+                trade_direction = -1
             
-            # 计算平仓部分的已实现盈亏
+            # 计算最终持仓数量
+            new_quantity = old_quantity + trade_direction * trade_quantity
+            
+            # 检查是否有平仓交易
             if (old_quantity > 0 and action == "sell") or (old_quantity < 0 and action == "buy"):
-                # 平仓交易，计算已实现盈亏
-                close_quantity = min(abs(old_quantity), quantity)
+                # 反向交易，需要处理平仓
+                close_quantity = min(abs(old_quantity), trade_quantity)
+                remaining_trade_quantity = trade_quantity - close_quantity
+                
                 if instrument_type == "option":
                     multiplier = 100
                 else:
                     multiplier = 1
                 
-                # 平仓盈亏 = (平仓价格 - 入场价格) × 平仓数量 × 乘数 × 方向
+                # 计算平仓盈亏
                 if old_quantity > 0:  # 原来是多头，现在卖出平仓
                     close_pnl = (price - old_entry_price) * close_quantity * multiplier
                 else:  # 原来是空头，现在买入平仓
                     close_pnl = (old_entry_price - price) * close_quantity * multiplier
                 
                 self.realized_pnl += close_pnl
-                print(f"  平仓盈亏: ${close_pnl:+,.2f} | 累计已实现盈亏: ${self.realized_pnl:+,.2f}")
+                print(f"  平仓{close_quantity}手，盈亏: ${close_pnl:+,.2f} | 累计已实现盈亏: ${self.realized_pnl:+,.2f}")
+                
+                # 处理剩余的新开仓部分
+                if remaining_trade_quantity > 0:
+                    print(f"  新开仓{remaining_trade_quantity}手 @ ${price:.2f}")
+                    # 新开仓使用当前交易价格
+                    new_entry_price = price
+                else:
+                    # 只是部分平仓，剩余持仓保持原价格
+                    new_entry_price = old_entry_price
+            else:
+                # 同向加仓，计算加权平均价格
+                total_cost = abs(old_quantity) * old_entry_price + trade_quantity * price
+                total_quantity = abs(old_quantity) + trade_quantity
+                new_entry_price = total_cost / total_quantity
+                print(f"  加仓{trade_quantity}手，加权平均价: ${new_entry_price:.2f}")
             
             if new_quantity == 0:
                 del self.positions[symbol]
+                print(f"  持仓清零")
             else:
-                # 更新持仓
-                if (old_quantity > 0 and action == "buy") or (old_quantity < 0 and action == "sell"):
-                    # 同向加仓，计算加权平均价格
-                    total_cost = abs(old_quantity) * old_entry_price + quantity * price
-                    total_quantity = abs(old_quantity) + quantity
-                    new_entry_price = total_cost / total_quantity
-                else:
-                    # 反向交易（平仓），剩余持仓保持原入场价格
-                    new_entry_price = old_entry_price
-                
                 self.positions[symbol]['quantity'] = new_quantity
                 self.positions[symbol]['entry_price'] = new_entry_price
+                print(f"  更新持仓: {new_quantity}手 @ ${new_entry_price:.2f}")
         else:
             # 新开仓
             if action == "buy":
