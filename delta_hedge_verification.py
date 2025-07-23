@@ -75,8 +75,8 @@ class DetailedPortfolioTracker:
                     total_quantity = abs(old_quantity) + quantity
                     new_entry_price = total_cost / total_quantity
                 else:
-                    # 反向交易后的剩余持仓，使用新价格
-                    new_entry_price = price
+                    # 反向交易（平仓），剩余持仓保持原入场价格
+                    new_entry_price = old_entry_price
                 
                 self.positions[symbol]['quantity'] = new_quantity
                 self.positions[symbol]['entry_price'] = new_entry_price
