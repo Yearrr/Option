@@ -20,7 +20,8 @@ class Order:
     
     def __init__(self, order_id: str, symbol: str, action: str, quantity: int,
                  order_type: str = "market", price: float = None, 
-                 strategy: str = None, timestamp: datetime = None):
+                 strategy: str = None, timestamp: datetime = None,
+                 instrument_type: str = "option", contract_multiplier: int = None):
         self.order_id = order_id
         self.symbol = symbol
         self.action = action  # "buy" or "sell"
@@ -28,6 +29,8 @@ class Order:
         self.order_type = order_type  # "market", "limit", "stop"
         self.price = price
         self.strategy = strategy
+        self.instrument_type = instrument_type.lower()
+        self.contract_multiplier = contract_multiplier
         self.timestamp = timestamp or datetime.now()
         self.status = "pending"  # "pending", "filled", "canceled", "rejected"
         self.filled_price = None
@@ -44,6 +47,8 @@ class Order:
             'order_type': self.order_type,
             'price': self.price,
             'strategy': self.strategy,
+            'instrument_type': self.instrument_type,
+            'contract_multiplier': self.contract_multiplier,
             'timestamp': self.timestamp,
             'status': self.status,
             'filled_price': self.filled_price,
@@ -56,12 +61,26 @@ class Position:
     """持仓类"""
     
     def __init__(self, symbol: str, quantity: int, entry_price: float,
-                 entry_date: datetime, strategy: str = None):
+                 entry_date: datetime, strategy: str = None, 
+                 instrument_type: str = "option", contract_multiplier: int = None):
         self.symbol = symbol
         self.quantity = quantity
         self.entry_price = entry_price
         self.entry_date = entry_date
         self.strategy = strategy
+        self.instrument_type = instrument_type.lower()  # "option", "future", "stock", etc.
+        
+        # 设置默认合约乘数
+        if contract_multiplier is None:
+            if self.instrument_type == "option":
+                self.contract_multiplier = 100  # 期权默认100
+            elif self.instrument_type == "future":
+                self.contract_multiplier = 1    # 期货默认1，具体需要根据品种设置
+            else:
+                self.contract_multiplier = 1    # 其他金融工具默认1
+        else:
+            self.contract_multiplier = contract_multiplier
+            
         self.current_price = entry_price
         self.unrealized_pnl = 0
         self.realized_pnl = 0
@@ -77,7 +96,7 @@ class Position:
         # 正确计算未实现盈亏：(当前价格 - 入场价格) * 持仓数量 * 合约乘数
         # 对于多头：quantity > 0，价格上涨盈利
         # 对于空头：quantity < 0，价格下跌盈利
-        self.unrealized_pnl = (new_price - self.entry_price) * self.quantity * 100
+        self.unrealized_pnl = (new_price - self.entry_price) * self.quantity * self.contract_multiplier
         
     def add_trade(self, quantity: int, price: float, commission: float = 0):
         """添加交易"""
@@ -96,7 +115,7 @@ class Position:
                 # 减仓或平仓
                 close_quantity = min(abs(quantity), abs(self.quantity))
                 # 平仓盈亏 = (平仓价格 - 开仓价格) * 平仓数量 * 持仓方向 * 合约乘数
-                self.realized_pnl += (price - self.entry_price) * close_quantity * np.sign(self.quantity) * 100
+                self.realized_pnl += (price - self.entry_price) * close_quantity * np.sign(self.quantity) * self.contract_multiplier
                 self.quantity += quantity
                 
                 if self.quantity == 0:
@@ -107,11 +126,11 @@ class Position:
     def to_dict(self) -> Dict:
         """转换为字典"""
         # 计算当前市值
-        current_market_value = self.quantity * self.current_price * 100
+        current_market_value = self.quantity * self.current_price * self.contract_multiplier
         # 计算总盈亏
         total_pnl = self.unrealized_pnl + self.realized_pnl
-        # 计算权利金现金流（入场时）
-        premium_cash_flow = self.quantity * self.entry_price * 100
+        # 计算现金流（入场时）
+        cash_flow = self.quantity * self.entry_price * self.contract_multiplier
         
         return {
             'position_id': self.position_id,
@@ -121,14 +140,16 @@ class Position:
             'current_price': self.current_price,
             'entry_date': self.entry_date,
             'strategy': self.strategy,
+            'instrument_type': self.instrument_type,
+            'contract_multiplier': self.contract_multiplier,
             'unrealized_pnl': self.unrealized_pnl,
             'realized_pnl': self.realized_pnl,
             'total_pnl': total_pnl,
             'current_market_value': current_market_value,
-            'premium_cash_flow': premium_cash_flow,
+            'cash_flow': cash_flow,
             'total_commission': self.total_commission,
             'greeks': self.greeks,
-            'option_position_type': 'Bought' if self.quantity > 0 else 'Sold'
+            'position_type': 'Long' if self.quantity > 0 else 'Short'
         }
 
 
@@ -147,23 +168,27 @@ class TradingEngine:
         
     def place_order(self, symbol: str, action: str, quantity: int,
                    order_type: str = "market", price: float = None,
-                   strategy: str = None) -> str:
+                   strategy: str = None, instrument_type: str = "option",
+                   contract_multiplier: int = None) -> str:
         """
         下单
         
         Args:
-            symbol: 期权代码
+            symbol: 金融工具代码
             action: 买卖方向
             quantity: 数量
             order_type: 订单类型
             price: 价格
             strategy: 策略名称
+            instrument_type: 金融工具类型 ("option", "future", "stock", 等)
+            contract_multiplier: 合约乘数
             
         Returns:
             订单ID
         """
         order_id = str(uuid.uuid4())
-        order = Order(order_id, symbol, action, quantity, order_type, price, strategy)
+        order = Order(order_id, symbol, action, quantity, order_type, price, strategy,
+                     instrument_type=instrument_type, contract_multiplier=contract_multiplier)
         self.orders.append(order)
         return order_id
     
@@ -213,16 +238,33 @@ class TradingEngine:
         else:
             self.positions[order.symbol] = Position(
                 order.symbol, signed_quantity, execution_price,
-                self.current_date or datetime.now(), order.strategy
+                self.current_date or datetime.now(), order.strategy,
+                order.instrument_type, order.contract_multiplier
             )
         
-        # 更新现金 - 期权交易现金流
-        if order.action == "buy":
-            # 买入期权：支付权利金 + 手续费
-            cash_flow = -(order.quantity * execution_price * 100) - commission
-        else:  # sell
-            # 卖出期权：收到权利金 - 手续费
-            cash_flow = (order.quantity * execution_price * 100) - commission
+        # 更新现金 - 根据金融工具类型计算现金流
+        # 确定合约乘数
+        multiplier = order.contract_multiplier
+        if multiplier is None:
+            if order.instrument_type == "option":
+                multiplier = 100
+            elif order.instrument_type == "future":
+                multiplier = 1  # 期货通常是1，具体根据品种而定
+            else:
+                multiplier = 1
+        
+        if order.instrument_type == "option":
+            # 期权交易现金流
+            if order.action == "buy":
+                # 买入期权：支付权利金 + 手续费
+                cash_flow = -(order.quantity * execution_price * multiplier) - commission
+            else:  # sell
+                # 卖出期权：收到权利金 - 手续费
+                cash_flow = (order.quantity * execution_price * multiplier) - commission
+        else:
+            # 期货或其他金融工具：只有手续费，无权利金
+            # 期货交易通常只支付保证金，这里简化处理
+            cash_flow = -commission
         
         self.cash += cash_flow
         
@@ -315,7 +357,8 @@ class TradingEngine:
                     'price': intrinsic_value,
                     'commission': 0,
                     'strategy': position.strategy,
-                    'cash_flow': position.quantity * intrinsic_value * 100
+                    'instrument_type': position.instrument_type,
+                    'cash_flow': position.quantity * intrinsic_value * position.contract_multiplier
                 }
                 self.trades.append(trade)
                 
@@ -329,22 +372,22 @@ class TradingEngine:
         """
         计算投资组合总价值
         
-        期权持仓价值计算：
-        - 买入期权 (quantity > 0): 拥有权利，价值 = quantity × current_price × 100
-        - 卖出期权 (quantity < 0): 承担义务，价值 = quantity × current_price × 100 (为负数)
+        金融工具持仓价值计算：
+        - 多头持仓 (quantity > 0): 拥有权利/资产，价值 = quantity × current_price × contract_multiplier
+        - 空头持仓 (quantity < 0): 承担义务/负债，价值 = quantity × current_price × contract_multiplier (为负数)
         
         现金流已在交易时正确处理：
-        - 买入期权时：现金减少（支付权利金）
-        - 卖出期权时：现金增加（收到权利金）
+        - 期权：买入支付权利金，卖出收到权利金
+        - 期货：主要支付保证金和手续费
         
-        投资组合总价值 = 现金 + 所有期权持仓的当前市值
+        投资组合总价值 = 现金 + 所有金融工具持仓的当前市值
         """
         positions_value = 0
         for pos in self.positions.values():
-            # 期权持仓当前市值
-            # 买入期权：quantity > 0，当前价值为正（资产）
-            # 卖出期权：quantity < 0，当前价值为负（负债）
-            position_current_value = pos.quantity * pos.current_price * 100
+            # 持仓当前市值 = 数量 × 当前价格 × 合约乘数
+            # 多头持仓：quantity > 0，当前价值为正（资产）
+            # 空头持仓：quantity < 0，当前价值为负（负债）
+            position_current_value = pos.quantity * pos.current_price * pos.contract_multiplier
             positions_value += position_current_value
             
         return self.cash + positions_value
@@ -371,16 +414,11 @@ class TradingEngine:
         position_data = []
         for position in self.positions.values():
             data = position.to_dict()
-            # 期权持仓当前市值
-            # 买入期权：正值（资产）
-            # 卖出期权：负值（负债）
-            data['current_market_value'] = position.quantity * position.current_price * 100
-            # 添加期权交易类型标识
-            data['option_position_type'] = 'Bought' if position.quantity > 0 else 'Sold'
+            # 金融工具持仓当前市值（已在to_dict中计算）
+            # 多头持仓：正值（资产）
+            # 空头持仓：负值（负债）
             # 计算持仓的绝对价值（用于风险分析）
             data['absolute_market_value'] = abs(data['current_market_value'])
-            # 计算权利金现金流（历史）
-            data['premium_cash_flow'] = position.quantity * position.entry_price * 100
             position_data.append(data)
         
         return pd.DataFrame(position_data)
@@ -394,24 +432,35 @@ class TradingEngine:
         """
         breakdown = {
             'cash': self.cash,
-            'bought_options_value': 0,    # 买入期权总价值（资产）
-            'sold_options_value': 0,      # 卖出期权总价值（负债）
-            'net_options_value': 0,       # 净期权价值
-            'total_portfolio_value': 0    # 总投资组合价值
+            'long_positions_value': 0,     # 多头持仓总价值（资产）
+            'short_positions_value': 0,    # 空头持仓总价值（负债）
+            'options_value': 0,            # 期权持仓总价值
+            'futures_value': 0,            # 期货持仓总价值
+            'other_instruments_value': 0,  # 其他金融工具价值
+            'net_positions_value': 0,      # 净持仓价值
+            'total_portfolio_value': 0     # 总投资组合价值
         }
         
         for pos in self.positions.values():
-            position_current_value = pos.quantity * pos.current_price * 100
+            position_current_value = pos.quantity * pos.current_price * pos.contract_multiplier
+            
+            # 按多空分类
             if pos.quantity > 0:
-                # 买入期权（拥有权利，资产）
-                breakdown['bought_options_value'] += position_current_value
+                breakdown['long_positions_value'] += position_current_value
             else:
-                # 卖出期权（承担义务，负债）
-                breakdown['sold_options_value'] += position_current_value  # 这是负数
+                breakdown['short_positions_value'] += position_current_value  # 这是负数
+                
+            # 按金融工具类型分类
+            if pos.instrument_type == "option":
+                breakdown['options_value'] += position_current_value
+            elif pos.instrument_type == "future":
+                breakdown['futures_value'] += position_current_value
+            else:
+                breakdown['other_instruments_value'] += position_current_value
         
-        breakdown['net_options_value'] = (breakdown['bought_options_value'] + 
-                                        breakdown['sold_options_value'])
-        breakdown['total_portfolio_value'] = breakdown['cash'] + breakdown['net_options_value']
+        breakdown['net_positions_value'] = (breakdown['long_positions_value'] + 
+                                          breakdown['short_positions_value'])
+        breakdown['total_portfolio_value'] = breakdown['cash'] + breakdown['net_positions_value']
         
         return breakdown
     
@@ -578,25 +627,35 @@ class BacktestEngine:
 
 
 if __name__ == "__main__":
-    # 测试交易引擎 - 包含多头和空头持仓
+    # 测试交易引擎 - 支持期权和期货
     
     # 创建交易引擎
     engine = TradingEngine(initial_cash=100000)
     print(f"Initial cash: ${engine.cash:.2f}")
     
     # 测试1: 买入期权（多头持仓）
-    print("\n=== 测试多头持仓 ===")
-    order_id1 = engine.place_order("AAPL_CALL_150_2024_01", "buy", 10, strategy="long_call")
+    print("\n=== 测试期权交易 ===")
+    order_id1 = engine.place_order("AAPL_CALL_150_2024_01", "buy", 10, 
+                                   strategy="long_call", instrument_type="option")
     order1 = engine.orders[0]
     success1 = engine.execute_order(order1, 5.50)  # 买入价格5.50
-    print(f"Buy order executed: {success1}")
+    print(f"Buy option executed: {success1}")
     
     # 测试2: 卖出期权（空头持仓）
-    print("\n=== 测试空头持仓 ===")
-    order_id2 = engine.place_order("AAPL_PUT_140_2024_01", "sell", 5, strategy="short_put")
+    order_id2 = engine.place_order("AAPL_PUT_140_2024_01", "sell", 5, 
+                                   strategy="short_put", instrument_type="option")
     order2 = engine.orders[1]
     success2 = engine.execute_order(order2, 3.20)  # 卖出价格3.20
-    print(f"Sell order executed: {success2}")
+    print(f"Sell option executed: {success2}")
+    
+    # 测试3: 期货交易
+    print("\n=== 测试期货交易 ===")
+    order_id3 = engine.place_order("CU2405", "buy", 2, 
+                                   strategy="long_future", instrument_type="future",
+                                   contract_multiplier=5)  # 铜期货，合约乘数5吨
+    order3 = engine.orders[2]
+    success3 = engine.execute_order(order3, 74500)  # 价格74,500元/吨
+    print(f"Buy future executed: {success3}")
     
     print(f"\nCash after trades: ${engine.cash:.2f}")
     
@@ -609,6 +668,9 @@ if __name__ == "__main__":
         "AAPL_PUT_140_2024_01": {
             'price': 2.80,  # 看跌期权价格下跌
             'greeks': {'delta': -0.4, 'gamma': 0.02, 'theta': -1.5, 'vega': 6}
+        },
+        "CU2405": {
+            'price': 75200,  # 铜期货价格上涨
         }
     }
     engine.update_positions(market_data)
@@ -625,11 +687,13 @@ if __name__ == "__main__":
     if not positions.empty:
         for _, pos in positions.iterrows():
             print(f"Symbol: {pos['symbol']}")
-            print(f"  Type: {pos['option_position_type']}")
+            print(f"  Instrument Type: {pos['instrument_type']}")
+            print(f"  Position Type: {pos['position_type']}")
             print(f"  Quantity: {pos['quantity']}")
+            print(f"  Contract Multiplier: {pos['contract_multiplier']}")
             print(f"  Entry Price: ${pos['entry_price']:.2f}")
             print(f"  Current Price: ${pos['current_price']:.2f}")
-            print(f"  Premium Cash Flow: ${pos['premium_cash_flow']:.2f}")
+            print(f"  Cash Flow: ${pos['cash_flow']:.2f}")
             print(f"  Current Market Value: ${pos['current_market_value']:.2f}")
             print(f"  Unrealized PnL: ${pos['unrealized_pnl']:.2f}")
             print()
