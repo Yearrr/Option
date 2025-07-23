@@ -116,10 +116,18 @@ class Position:
                 close_quantity = min(abs(quantity), abs(self.quantity))
                 # 平仓盈亏 = (平仓价格 - 开仓价格) * 平仓数量 * 持仓方向 * 合约乘数
                 self.realized_pnl += (price - self.entry_price) * close_quantity * np.sign(self.quantity) * self.contract_multiplier
+                
+                # 更新数量
+                old_quantity = self.quantity
                 self.quantity += quantity
                 
                 if self.quantity == 0:
+                    # 完全平仓
                     self.entry_price = 0
+                elif np.sign(self.quantity) != np.sign(old_quantity):
+                    # 反手开仓：原持仓已完全平仓，现在是新的反向持仓
+                    # 新持仓的入场价格应该是当前交易价格
+                    self.entry_price = price
         
         self.total_commission += commission
         
