@@ -372,25 +372,19 @@ class TradingEngine:
         """
         计算投资组合总价值
         
-        金融工具持仓价值计算：
-        - 多头持仓 (quantity > 0): 拥有权利/资产，价值 = quantity × current_price × contract_multiplier
-        - 空头持仓 (quantity < 0): 承担义务/负债，价值 = quantity × current_price × contract_multiplier (为负数)
+        正确的计算逻辑：
+        投资组合总价值 = 初始现金 + 总盈亏
+        总盈亏 = 所有持仓的未实现盈亏之和
         
-        现金流已在交易时正确处理：
-        - 期权：买入支付权利金，卖出收到权利金
-        - 期货：主要支付保证金和手续费
-        
-        投资组合总价值 = 现金 + 所有金融工具持仓的当前市值
+        注意：现金变化已经在交易时处理（期权权利金等），
+        但投资组合价值应该基于盈亏而不是持仓市值。
         """
-        positions_value = 0
+        total_unrealized_pnl = 0
         for pos in self.positions.values():
-            # 持仓当前市值 = 数量 × 当前价格 × 合约乘数
-            # 多头持仓：quantity > 0，当前价值为正（资产）
-            # 空头持仓：quantity < 0，当前价值为负（负债）
-            position_current_value = pos.quantity * pos.current_price * pos.contract_multiplier
-            positions_value += position_current_value
+            # 使用Position类中已经正确计算的unrealized_pnl
+            total_unrealized_pnl += pos.unrealized_pnl
             
-        return self.cash + positions_value
+        return self.initial_cash + total_unrealized_pnl
     
     def get_portfolio_greeks(self) -> Dict[str, float]:
         """计算投资组合Greeks"""
@@ -432,35 +426,37 @@ class TradingEngine:
         """
         breakdown = {
             'cash': self.cash,
-            'long_positions_value': 0,     # 多头持仓总价值（资产）
-            'short_positions_value': 0,    # 空头持仓总价值（负债）
-            'options_value': 0,            # 期权持仓总价值
-            'futures_value': 0,            # 期货持仓总价值
-            'other_instruments_value': 0,  # 其他金融工具价值
-            'net_positions_value': 0,      # 净持仓价值
+            'long_positions_pnl': 0,       # 多头持仓盈亏
+            'short_positions_pnl': 0,      # 空头持仓盈亏
+            'options_pnl': 0,              # 期权持仓盈亏
+            'futures_pnl': 0,              # 期货持仓盈亏
+            'other_instruments_pnl': 0,    # 其他金融工具盈亏
+            'total_unrealized_pnl': 0,     # 总未实现盈亏
             'total_portfolio_value': 0     # 总投资组合价值
         }
         
         for pos in self.positions.values():
-            position_current_value = pos.quantity * pos.current_price * pos.contract_multiplier
+            # 使用正确的盈亏计算，而不是市值
+            position_pnl = pos.unrealized_pnl
             
             # 按多空分类
             if pos.quantity > 0:
-                breakdown['long_positions_value'] += position_current_value
+                breakdown['long_positions_pnl'] += position_pnl
             else:
-                breakdown['short_positions_value'] += position_current_value  # 这是负数
+                breakdown['short_positions_pnl'] += position_pnl
                 
             # 按金融工具类型分类
             if pos.instrument_type == "option":
-                breakdown['options_value'] += position_current_value
+                breakdown['options_pnl'] += position_pnl
             elif pos.instrument_type == "future":
-                breakdown['futures_value'] += position_current_value
+                breakdown['futures_pnl'] += position_pnl
             else:
-                breakdown['other_instruments_value'] += position_current_value
+                breakdown['other_instruments_pnl'] += position_pnl
+            
+            breakdown['total_unrealized_pnl'] += position_pnl
         
-        breakdown['net_positions_value'] = (breakdown['long_positions_value'] + 
-                                          breakdown['short_positions_value'])
-        breakdown['total_portfolio_value'] = breakdown['cash'] + breakdown['net_positions_value']
+        # 正确的投资组合价值计算
+        breakdown['total_portfolio_value'] = self.initial_cash + breakdown['total_unrealized_pnl']
         
         return breakdown
     
