@@ -96,17 +96,19 @@ class DetailedPortfolioTracker:
     
     def get_portfolio_value(self) -> float:
         """计算投资组合总价值"""
-        positions_value = 0
+        total_unrealized_pnl = 0
         for symbol, position in self.positions.items():
             if position['instrument_type'] == "option":
                 multiplier = 100
             else:
                 multiplier = 1
             
-            market_value = position['quantity'] * position['current_price'] * multiplier
-            positions_value += market_value
+            # 计算未实现盈亏，而不是市值
+            unrealized_pnl = (position['current_price'] - position['entry_price']) * position['quantity'] * multiplier
+            total_unrealized_pnl += unrealized_pnl
         
-        return self.cash + positions_value
+        # 投资组合价值 = 初始现金 + 总盈亏
+        return self.initial_cash + total_unrealized_pnl
     
     def get_detailed_breakdown(self) -> Dict:
         """获取详细的持仓分解"""
@@ -117,7 +119,7 @@ class DetailedPortfolioTracker:
             'positions': []
         }
         
-        total_value = self.cash
+        total_unrealized_pnl = 0
         
         for symbol, position in self.positions.items():
             if position['instrument_type'] == "option":
@@ -139,12 +141,15 @@ class DetailedPortfolioTracker:
             }
             
             breakdown['positions'].append(pos_info)
-            total_value += market_value
-            breakdown['total_unrealized_pnl'] += unrealized_pnl
+            total_unrealized_pnl += unrealized_pnl
         
-        breakdown['total_portfolio_value'] = total_value
-        breakdown['total_return'] = total_value - self.initial_cash
-        breakdown['return_pct'] = (total_value - self.initial_cash) / self.initial_cash * 100
+        # 正确的计算逻辑：
+        # 总收益 = 未实现盈亏（期权盈亏 + 期货盈亏）
+        # 投资组合价值 = 初始现金 + 总收益
+        breakdown['total_unrealized_pnl'] = total_unrealized_pnl
+        breakdown['total_return'] = total_unrealized_pnl  # 总收益就是未实现盈亏
+        breakdown['total_portfolio_value'] = self.initial_cash + total_unrealized_pnl
+        breakdown['return_pct'] = total_unrealized_pnl / self.initial_cash * 100
         
         return breakdown
     
